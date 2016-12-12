@@ -63,7 +63,7 @@ def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('path', help='the path to watch (recursive)')
     command_help = (
-        'remaining position arguments are the command to execute. '
+        'remaining positional arguments are the command to execute. '
         'use {!r} to substitute the filename of the change event'
     )
     p.add_argument('command',
