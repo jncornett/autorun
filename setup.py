@@ -8,6 +8,9 @@ setup(
         'console_scripts': [
             'autorun = autorun.__main__:main'
         ]
-    }
+    },
+    install_requires=[
+        'watchdog'
+    ]
 )
 

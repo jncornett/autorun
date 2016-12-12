@@ -11,40 +11,37 @@ import shlex
 from watchdog.observers import Observer
 from watchdog.events import FileSystemEventHandler
 
-
-class Map(dict):
-    def __missing__(self, key):
-        return ''
-
-
-def format_ansi(mappings, string):
-    return string.format_map(Map(mappings))
+from . import color
+from . import metadata
+from . import debouncer
 
 
-def isatty():
-    return sys.stderr.isatty()
+FILENAME_REPLACEMENT = '%'
 
 
 class PlainFormatter(logging.Formatter):
-    STYLE = {}
+    STYLE = metadata.Map()
+    LEVELS = metadata.Map()
     def format(self, record):
-        msg = format_ansi(self.STYLE, record.msg)
-        level = record.levelname.lower()
-        level_fmt = '{%s}%s{/}' % (level, level)
-        level_out = format_ansi(self.STYLE, level_fmt)
-        return '[ %s ]: %s' % (level_out, msg % record.args)
+        msg = record.msg.format_map(self.STYLE)
+        level = '{{{name}}}{name}{{/{name}}}'.format(
+            name=record.levelname.lower()
+        ).format_map(self.LEVELS)
+        return '[ {} ]: {}'.format(level, msg % record.args)
 
 
 class TTYFormatter(PlainFormatter):
-    STYLE = {
-        'debug': '\x1b[34m',
-        'info': '\x1b[32m',
-        'warning': '\x1b[33m',
-        'error': '\x1b[31m',
-        'path': '\x1b[35m',
-        'cmd': '\x1b[36m',
-        '/': '\x1b[0m'
-    }
+    LEVELS = metadata.Map({
+        'debug': (color.hex_to_ansi('477187'), color.reset()),
+        'info': (color.hex_to_ansi('52a55d'), color.reset()),
+        'warning': (color.hex_to_ansi('d4a46a'), color.reset()),
+        'error': (color.hex_to_ansi('d4706a'), color.reset()),
+    })
+    STYLE = metadata.Map({
+        'path': (color.hex_to_ansi('ffd8aa'), color.reset()),
+        'cmd': ('`' + color.hex_to_ansi('6f90a2'), color.reset() + '`'),
+        'num': (color.hex_to_ansi('84c68c'), color.reset())
+    })
 
 
 class EventHandler(FileSystemEventHandler):
@@ -55,31 +52,42 @@ class EventHandler(FileSystemEventHandler):
     def on_any_event(self, e):
         if self.filter(e):
             logging.getLogger(__name__).info(
-                '{path}%s{/} %s', e.src_path, e.event_type)
+                '{path}%s{/path} %s', e.src_path, e.event_type)
             self.command(e)
         else:
             logging.getLogger(__name__).debug(
-                '{path}%s{/} %s ignored', e.src_path, e.event_type)
+                '{path}%s{/path} %s ignored', e.src_path, e.event_type)
 
 
 def parse_args():
     p = argparse.ArgumentParser()
     p.add_argument('path', help='the path to watch (recursive)')
+    command_help = (
+        'remaining position arguments are the command to execute. '
+        'use {!r} to substitute the filename of the change event'
+    )
     p.add_argument('command',
         nargs=argparse.REMAINDER,
-        help='remaining positional arguments as the command to execute')
+        help=command_help.format(FILENAME_REPLACEMENT).replace('%', '%%'))
     p.add_argument('-i', '--include',
         action='append', metavar='PATTERN',
         help='glob pattern to include. can be specified more than once')
     p.add_argument('-x', '--exclude',
         action='append', metavar='PATTERN',
         help='glob pattern to exclude. can be specified more than once')
+    p.add_argument('-l', '--latency',
+        type=float, default=1.0, metavar='SECONDS',
+        help='latency (in seconds) between runs')
     p.add_argument('-q', '--quiet',
         action='store_true',
         help='set verbosity to a minimum')
     p.add_argument('--debug',
         action='store_true',
         help='set verbosity very high')
+    p.add_argument('-L', '--log-file',
+        metavar='PATH',
+        help='specify a file to append logs to')
+    p.add_argument('-C', '--no-color', action='store_true')
     opts = p.parse_args()
     return opts
 
@@ -114,28 +122,36 @@ def get_filter(includes, excludes):
 
 def get_command(args):
     def inner(e):
-        cmd = [x.replace('%', e.src_path) for x in args]
+        cmd = [x.replace(FILENAME_REPLACEMENT, e.src_path) for x in args]
         logging.getLogger(__name__).info(
-            'running {cmd}%s{/}', ' '.join(map(shlex.quote, cmd)))
+            'running {cmd}%s{/cmd}', ' '.join(map(shlex.quote, cmd)))
         try:
             subprocess.check_call(cmd)
         except subprocess.CalledProcessError as error:
             logging.getLogger(__name__).error(
-                'returned %d', error.returncode)
+                '{cmd}%s{/cmd} returned {num}%d{/num}',
+                ' '.join(map(shlex.quote, cmd)), error.returncode)
+        else:
+            logging.getLogger(__name__).info('returned {num}0{/num}')
 
     return inner
 
 
-def setup_logging(logger, tty, debug, quiet):
-    if debug:
+def setup_logging(opts):
+    logger = logging.getLogger(__name__)
+    if opts.debug:
         logger.setLevel(logging.DEBUG)
-    elif quiet:
+    elif opts.quiet:
         logger.setLevel(logging.ERROR)
     else:
         logger.setLevel(logging.INFO)
 
-    handler = logging.StreamHandler()
-    if tty:
+    if opts.log_file:
+        handler = logging.FileHandler(opts.log_file)
+    else:
+        handler = logging.StreamHandler()
+
+    if sys.stdin.isatty() and not opts.no_color and not opts.log_file:
         handler.setFormatter(TTYFormatter())
     else:
         handler.setFormatter(PlainFormatter())
@@ -145,20 +161,24 @@ def setup_logging(logger, tty, debug, quiet):
 
 def main():
     opts = parse_args()
-    setup_logging(logging.getLogger(__name__), isatty(), opts.debug, opts.quiet)
+    setup_logging(opts)
+    callback = debouncer.Debouncer(get_command(opts.command), resolution=opts.latency)
     handler = EventHandler(
         get_filter(opts.include, opts.exclude),
-        get_command(opts.command)
+        callback
     )
     observer = Observer()
     observer.schedule(handler, opts.path, recursive=True)
+    callback.start()
     observer.start()
     try:
         while True:
             time.sleep(1)
     except KeyboardInterrupt:
         observer.stop()
+        callback.stop()
     observer.join()
+    callback.join()
 
 
 if __name__ == '__main__':
