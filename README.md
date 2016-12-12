@@ -41,7 +41,7 @@ more help
 
     positional arguments:
       path                  the path to watch (recursive)
-      command               remaining position arguments are the command to
+      command               remaining positional arguments are the command to
                             execute. use '%' to substitute the filename of the
                             change event
 
