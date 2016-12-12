@@ -1,7 +1,7 @@
 autorun
 =======
 
-Automatigically run shell commands when files change.
+Automagically run shell commands when files change.
 
 use cases
 ---------
