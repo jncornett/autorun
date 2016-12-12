@@ -132,7 +132,9 @@ def get_command(args):
                 '{cmd}%s{/cmd} returned {num}%d{/num}',
                 ' '.join(map(shlex.quote, cmd)), error.returncode)
         else:
-            logging.getLogger(__name__).info('returned {num}0{/num}')
+            logging.getLogger(__name__).debug(
+                '{cmd}%s{/cmd} returned {num}0{/num}',
+                ' '.join(map(shlex.quote, cmd)))
 
     return inner
 
